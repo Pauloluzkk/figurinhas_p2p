@@ -1,0 +1,9 @@
+{
+  "peer_id": "ALUNO-02",
+  "port": 8081,
+  "sticker_id": "FIG-02",
+  "sticker_url": "http://localhost:8081/figurinhas/FIG-02.png",
+  "neighbors": [
+    { "host": "localhost", "port": 8080 }
+  ]
+}

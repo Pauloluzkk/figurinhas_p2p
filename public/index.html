@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Interface P2P para troca de figurinhas - Sistema distribuído sem servidor central">
+  <title>Figurinhas P2P</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="icon"
+    href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='14' font-size='14'>🎴</text></svg>">
+</head>
+
+<body>
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <span class="logo-icon">🎴</span> Figurinhas P2P
+    </div>
+    <div class="node-info">
+      <span class="badge badge-accent" id="header-peer-id">...</span>
+      <span class="badge badge-muted" id="header-sticker-id">...</span>
+      <span class="badge badge-success"><span class="pulse-dot"></span> Online</span>
+    </div>
+  </header>
+
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <!-- Peers -->
+      <div class="panel">
+        <div class="panel-title">Peers Conectados</div>
+        <ul class="peers-list" id="peers-list">
+          <li class="empty-state">Nenhum peer conectado</li>
+        </ul>
+        <div class="form-group" style="margin-top: 12px;">
+          <div class="panel-title" style="margin-bottom: 8px;">Conectar a Peer</div>
+          <div class="form-row">
+            <input type="text" id="connect-host" placeholder="Host / IP">
+            <input type="text" id="connect-port" placeholder="Porta" style="max-width: 80px;">
+          </div>
+          <button class="btn btn-ghost btn-block btn-sm" onclick="connectPeer()">Conectar</button>
+        </div>
+      </div>
+
+      <!-- Search -->
+      <div class="panel">
+        <div class="panel-title">Buscar Figurinha</div>
+        <div class="form-group">
+          <input type="text" id="search-input" placeholder="Ex: FIG-05"
+            onkeydown="if(event.key==='Enter') searchSticker()">
+          <button class="btn btn-primary btn-block btn-sm" onclick="searchSticker()">🔍 Buscar na Rede</button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <div style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+      <main>
+        <!-- Tabs -->
+        <nav class="tabs">
+          <button class="tab active" data-tab="album" onclick="switchTab('album')">🎴 Álbum</button>
+          <button class="tab" data-tab="trades" onclick="switchTab('trades')">
+            🔄 Trocas <span class="offer-count" id="offer-badge" style="display: none;">0</span>
+          </button>
+          <button class="tab" data-tab="history" onclick="switchTab('history')">📋 Histórico</button>
+        </nav>
+
+        <!-- Tab Content -->
+        <div class="tab-content">
+          <!-- Album -->
+          <section id="tab-album" class="tab-pane active">
+            <div class="album-header">
+              <h2 style="font-size: 1.1rem; font-weight: 600;">Meu Álbum</h2>
+              <div class="album-stats" id="album-stats"></div>
+            </div>
+            <div class="sticker-grid" id="sticker-grid"></div>
+          </section>
+
+          <!-- Trades -->
+          <section id="tab-trades" class="tab-pane">
+            <div class="trades-container">
+              <!-- Incoming offers -->
+              <div class="trades-section">
+                <h3>📥 Ofertas Recebidas <span class="offer-count" id="offer-count">0</span></h3>
+                <div id="offers-list">
+                  <div class="empty-state">Nenhuma oferta pendente</div>
+                </div>
+              </div>
+
+              <!-- Send trade -->
+              <div class="trades-section">
+                <h3>📤 Propor Troca</h3>
+                <div class="trade-form-fields">
+                  <div>
+                    <label>Peer de destino</label>
+                    <select id="trade-peer">
+                      <option value="">Selecione um peer...</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Figurinha que ofereço</label>
+                    <select id="trade-offer">
+                      <option value="">Selecione...</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label>Figurinha que quero</label>
+                    <input type="text" id="trade-want" placeholder="Ex: FIG-05">
+                  </div>
+                  <button class="btn btn-primary btn-block" onclick="proposeTrade()">Enviar Proposta</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- History -->
+          <section id="tab-history" class="tab-pane">
+            <h2 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 20px;">Histórico de Trocas</h2>
+            <div class="history-list" id="history-list">
+              <div class="empty-state">Nenhuma troca realizada ainda</div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <!-- Activity Log -->
+      <div class="activity-panel">
+        <div class="activity-header">
+          <h4>📡 Log de Atividade</h4>
+          <button class="btn btn-ghost btn-sm" onclick="clearLog()">Limpar</button>
+        </div>
+        <div class="activity-log" id="activity-log"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toasts -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script>
+    // ── State ──────────────────────────────────────────────
+    let nodeConfig = {};
+    let inventory = {};
+    let peers = [];
+    let offers = [];
+    let history = [];
+
+    // ── Init ───────────────────────────────────────────────
+    async function init() {
+      await fetchStatus();
+      await fetchAll();
+      connectSSE();
+      // Polling de backup a cada 5 segundos
+      setInterval(fetchAll, 5000);
+    }
+
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        nodeConfig = await res.json();
+        document.getElementById('header-peer-id').textContent = nodeConfig.peer_id;
+        document.getElementById('header-sticker-id').textContent = nodeConfig.sticker_id;
+      } catch (e) { console.error('Erro ao buscar status:', e); }
+    }
+
+    async function fetchAll() {
+      await Promise.all([fetchInventory(), fetchPeers(), fetchOffers(), fetchHistory()]);
+    }
+
+    // ── SSE (Server-Sent Events) ───────────────────────────
+    function connectSSE() {
+      const events = new EventSource('/api/events');
+
+      events.addEventListener('log', (e) => {
+        const data = JSON.parse(e.data);
+        addLogEntry(data.message, data.level || 'info');
+      });
+
+      events.addEventListener('search_hit', (e) => {
+        const data = JSON.parse(e.data);
+        showToast(`✅ ${data.sticker_id} encontrada em ${data.origin_peer_id}`, 'success');
+        addLogEntry(`SEARCH_HIT: ${data.sticker_id} encontrada em ${data.origin_peer_id}`, 'success');
+      });
+
+      events.addEventListener('trade_offer', (e) => {
+        const data = JSON.parse(e.data);
+        showToast(`📥 Oferta de ${data.from}: oferece ${data.offer_sticker_id}, quer ${data.want_sticker_id}`, 'info');
+        fetchOffers();
+      });
+
+      events.addEventListener('trade_accepted', (e) => {
+        const data = JSON.parse(e.data);
+        showToast(`✅ Troca aceita por ${data.peer}!`, 'success');
+        fetchInventory();
+        fetchHistory();
+      });
+
+      events.addEventListener('trade_rejected', (e) => {
+        const data = JSON.parse(e.data);
+        showToast(`❌ Troca rejeitada por ${data.peer}: ${data.reason || 'sem motivo'}`, 'error');
+      });
+
+      events.addEventListener('inventory_update', () => {
+        fetchInventory();
+      });
+
+      events.addEventListener('peer_update', () => {
+        fetchPeers();
+      });
+
+      events.addEventListener('transfer_confirm', (e) => {
+        const data = JSON.parse(e.data);
+        showToast(`📦 Transferência confirmada por ${data.peer}`, 'success');
+      });
+
+      events.onerror = () => {
+        addLogEntry('Conexão SSE perdida, tentando reconectar...', 'warning');
+      };
+    }
+
+    // ── API Fetchers ───────────────────────────────────────
+    async function fetchInventory() {
+      try {
+        const res = await fetch('/api/inventory');
+        inventory = await res.json();
+        renderAlbum();
+        renderTradeOfferSelect();
+      } catch (e) { console.error('Erro ao buscar inventário:', e); }
+    }
+
+    async function fetchPeers() {
+      try {
+        const res = await fetch('/api/peers');
+        peers = await res.json();
+        renderPeers();
+        renderTradePeerSelect();
+      } catch (e) { console.error('Erro ao buscar peers:', e); }
+    }
+
+    async function fetchOffers() {
+      try {
+        const res = await fetch('/api/offers');
+        offers = await res.json();
+        renderOffers();
+      } catch (e) { console.error('Erro ao buscar ofertas:', e); }
+    }
+
+    async function fetchHistory() {
+      try {
+        const res = await fetch('/api/history');
+        history = await res.json();
+        renderHistory();
+      } catch (e) { console.error('Erro ao buscar histórico:', e); }
+    }
+
+    // ── API Actions ────────────────────────────────────────
+    async function searchSticker() {
+      const input = document.getElementById('search-input');
+      const stickerId = input.value.trim().toUpperCase();
+      if (!stickerId) return;
+
+      try {
+        const res = await fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sticker_id: stickerId })
+        });
+        const data = await res.json();
+        addLogEntry(`Busca iniciada: ${stickerId} (query: ${data.query_id})`, 'accent');
+        showToast(`🔍 Buscando ${stickerId} na rede...`, 'info');
+        input.value = '';
+      } catch (e) {
+        showToast('Erro ao buscar', 'error');
+      }
+    }
+
+    async function connectPeer() {
+      const host = document.getElementById('connect-host').value.trim();
+      const port = document.getElementById('connect-port').value.trim() || '8080';
+      if (!host) return;
+
+      try {
+        await fetch('/api/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, port: parseInt(port) })
+        });
+        addLogEntry(`Conectando a ${host}:${port}...`, 'info');
+        document.getElementById('connect-host').value = '';
+        document.getElementById('connect-port').value = '';
+        setTimeout(fetchPeers, 2000);
+      } catch (e) {
+        showToast('Erro ao conectar', 'error');
+      }
+    }
+
+    async function proposeTrade() {
+      const targetPeer = document.getElementById('trade-peer').value;
+      const offerSticker = document.getElementById('trade-offer').value;
+      const wantSticker = document.getElementById('trade-want').value.trim().toUpperCase();
+
+      if (!targetPeer || !offerSticker || !wantSticker) {
+        showToast('Preencha todos os campos', 'warning');
+        return;
+      }
+
+      try {
+        const res = await fetch('/api/trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_peer_id: targetPeer,
+            offer_sticker_id: offerSticker,
+            want_sticker_id: wantSticker
+          })
+        });
+        const data = await res.json();
+        if (data.error) {
+          showToast(data.error, 'error');
+        } else {
+          showToast(`Proposta enviada para ${targetPeer}`, 'success');
+          document.getElementById('trade-want').value = '';
+        }
+      } catch (e) {
+        showToast('Erro ao propor troca', 'error');
+      }
+    }
+
+    async function acceptOffer(offerId) {
+      try {
+        const res = await fetch('/api/trade/accept', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offer_id: offerId })
+        });
+        const data = await res.json();
+        if (data.error) {
+          showToast(data.error, 'error');
+        } else {
+          showToast('Troca aceita!', 'success');
+          fetchOffers();
+          fetchInventory();
+          fetchHistory();
+        }
+      } catch (e) {
+        showToast('Erro ao aceitar', 'error');
+      }
+    }
+
+    async function rejectOffer(offerId) {
+      try {
+        await fetch('/api/trade/reject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ offer_id: offerId })
+        });
+        showToast('Troca rejeitada', 'warning');
+        fetchOffers();
+      } catch (e) {
+        showToast('Erro ao rejeitar', 'error');
+      }
+    }
+
+    // ── Renderers ──────────────────────────────────────────
+    function renderAlbum() {
+      const grid = document.getElementById('sticker-grid');
+      const stats = document.getElementById('album-stats');
+      const entries = Object.entries(inventory);
+
+      const totalTypes = entries.length;
+      const totalQty = entries.reduce((sum, [, q]) => sum + q, 0);
+      stats.innerHTML = `<strong>${totalTypes}</strong> figurinhas diferentes · <strong>${totalQty}</strong> cópias total`;
+
+      if (entries.length === 0) {
+        grid.innerHTML = '<div class="empty-state">Inventário vazio</div>';
+        return;
+      }
+
+      grid.innerHTML = entries
+        .sort(([a], [b]) => {
+          const na = parseInt(a.replace(/\D/g, '')) || 0;
+          const nb = parseInt(b.replace(/\D/g, '')) || 0;
+          return na - nb;
+        })
+        .map(([id, qty]) => {
+          const isOwned = qty > 0;
+          const isMySticker = id === nodeConfig.sticker_id;
+          return `
+            <div class="sticker-card ${isOwned ? 'owned' : ''}">
+              <div class="sticker-img-wrap">
+                ${isMySticker
+              ? `<img src="/figurinhas/${id}.png" alt="${id}" onerror="this.parentElement.innerHTML='<div class=placeholder-icon>🎴</div>'">`
+              : '<div class="placeholder-icon">🎴</div>'}
+              </div>
+              <div class="sticker-id">${id}</div>
+              <span class="sticker-qty ${isOwned ? 'has' : 'empty'}">${qty}x</span>
+            </div>
+          `;
+        })
+        .join('');
+    }
+
+    function renderPeers() {
+      const list = document.getElementById('peers-list');
+      if (peers.length === 0) {
+        list.innerHTML = '<li class="empty-state">Nenhum peer conectado</li>';
+        return;
+      }
+      list.innerHTML = peers
+        .map(p => `<li class="peer-item"><span class="peer-dot"></span> ${p}</li>`)
+        .join('');
+    }
+
+    function renderTradePeerSelect() {
+      const sel = document.getElementById('trade-peer');
+      const current = sel.value;
+      sel.innerHTML = '<option value="">Selecione um peer...</option>' +
+        peers.map(p => `<option value="${p}" ${p === current ? 'selected' : ''}>${p}</option>`).join('');
+    }
+
+    function renderTradeOfferSelect() {
+      const sel = document.getElementById('trade-offer');
+      const current = sel.value;
+      sel.innerHTML = '<option value="">Selecione...</option>' +
+        Object.entries(inventory)
+          .filter(([, q]) => q > 0)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([id, q]) => `<option value="${id}" ${id === current ? 'selected' : ''}>${id} (${q}x)</option>`)
+          .join('');
+    }
+
+    function renderOffers() {
+      const container = document.getElementById('offers-list');
+      const badge = document.getElementById('offer-badge');
+      const count = document.getElementById('offer-count');
+
+      if (offers.length === 0) {
+        container.innerHTML = '<div class="empty-state">Nenhuma oferta pendente</div>';
+        badge.style.display = 'none';
+        count.textContent = '0';
+        return;
+      }
+
+      badge.style.display = 'inline';
+      badge.textContent = offers.length;
+      count.textContent = offers.length;
+
+      container.innerHTML = offers.map(o => `
+        <div class="offer-card">
+          <div class="offer-from">De: <strong>${o.from}</strong></div>
+          <div class="offer-exchange">
+            <span class="offer-sticker receive">📥 ${o.offer_sticker_id}</span>
+            <span class="offer-arrow">⇄</span>
+            <span class="offer-sticker give">📤 ${o.want_sticker_id}</span>
+          </div>
+          <div class="offer-actions">
+            <button class="btn btn-success btn-sm" onclick="acceptOffer('${o.id}')">✓ Aceitar</button>
+            <button class="btn btn-danger btn-sm" onclick="rejectOffer('${o.id}')">✕ Recusar</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function renderHistory() {
+      const container = document.getElementById('history-list');
+      if (history.length === 0) {
+        container.innerHTML = '<div class="empty-state">Nenhuma troca realizada ainda</div>';
+        return;
+      }
+      container.innerHTML = history.map(h => {
+        const time = new Date(h.timestamp).toLocaleString('pt-BR');
+        return `
+          <div class="history-item">
+            <div class="history-icon">🔄</div>
+            <div class="history-details">
+              <strong>Troca com ${h.with}</strong>
+              <span>Dei: ${h.gave} → Recebi: ${h.received}</span>
+            </div>
+            <div class="history-time">${time}</div>
+          </div>
+        `;
+      }).reverse().join('');
+    }
+
+    // ── UI Helpers ─────────────────────────────────────────
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+      document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
+      document.getElementById(`tab-${tabName}`).classList.add('active');
+    }
+
+    function addLogEntry(message, level = 'info') {
+      const log = document.getElementById('activity-log');
+      const time = new Date().toLocaleTimeString('pt-BR');
+      const entry = document.createElement('div');
+      entry.className = `log-entry log-${level}`;
+      entry.innerHTML = `<span class="time">[${time}]</span> ${message}`;
+      log.appendChild(entry);
+      log.scrollTop = log.scrollHeight;
+
+      // Limitar a 200 entradas
+      while (log.children.length > 200) {
+        log.removeChild(log.firstChild);
+      }
+    }
+
+    function clearLog() {
+      document.getElementById('activity-log').innerHTML = '';
+    }
+
+    function showToast(message, type = 'info') {
+      const container = document.getElementById('toast-container');
+      const icons = { success: '✅', warning: '⚠️', error: '❌', info: 'ℹ️' };
+      const toast = document.createElement('div');
+      toast.className = `toast toast-${type}`;
+      toast.innerHTML = `<span class="toast-icon">${icons[type]}</span> <span>${message}</span>`;
+      container.appendChild(toast);
+      setTimeout(() => toast.remove(), 5000);
+    }
+
+    // ── Start ──────────────────────────────────────────────
+    init();
+    addLogEntry('Interface web conectada', 'success');
+  </script>
+</body>
+
+</html>
